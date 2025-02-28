@@ -22,16 +22,16 @@ class AssemblyAIStreamingSTT:
         # Configure la clé API AssemblyAI
         aai.settings.api_key = os.getenv("ASSEMBLYAI_API_KEY")
 
-        # Instancier le RealtimeTranscriber en passant les paramètres directement
+        # Instancier le RealtimeTranscriber en passant les paramètres requis
         self.transcriber = aai.RealtimeTranscriber(
-            encoding=aai.AudioEncoding.pcm_s16le,  # PCM 16 bits little-endian (par défaut)
-            sample_rate=8000,                      # 8000 Hz pour l'audio inbound de Twilio
-            end_utterance_silence_threshold=700    # Fin d'utterance après 700 ms de silence
+            encoding=aai.AudioEncoding.pcm_s16le,   # PCM 16 bits little-endian
+            sample_rate=8000,                       # 8000 Hz pour l'audio inbound de Twilio
+            end_utterance_silence_threshold=700,    # fin d'utterance après 700 ms de silence
+            on_data=self._on_result,                # Callback pour les données (résultats)
+            on_error=self._on_error                 # Callback pour les erreurs
         )
 
-        # Assigner les callbacks après instanciation
-        self.transcriber.on_result = self._on_result
-        self.transcriber.on_error = self._on_error
+        # Assigner le callback de fermeture si nécessaire
         self.transcriber.on_close = self._on_close
 
     def start(self):
@@ -54,7 +54,7 @@ class AssemblyAIStreamingSTT:
             self._thread.join()
 
     def send_audio(self, pcm_data: bytes):
-        """Envoie un chunk PCM16 à AssemblyAI."""
+        """Envoie un chunk PCM16 (8 kHz) à AssemblyAI."""
         if not self.stop_flag and self.transcriber:
             self.transcriber.send(pcm_data)
 
