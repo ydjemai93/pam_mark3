@@ -6,7 +6,7 @@ simple_websocket==0.10.1
 openai==0.28.0
 requests==2.31.0
 
-assemblyai==0.10.3   # la lib Python AssemblyAI
+assemblyai==0.11.0   # la lib Python AssemblyAI
 
 pydub==0.25.1
 gunicorn==21.2.0
