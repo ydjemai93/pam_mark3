@@ -1,95 +1,84 @@
-# stt.py
+# stt_assemblyai.py
+
 import os
-import time
-import queue
-import threading
-import tempfile
-import requests
-import wave
 import logging
-import openai
-from pydub import AudioSegment
+import assemblyai as aai
+import threading
 
-openai.api_key = os.getenv("OPENAI_API_KEY")
+class AssemblyAIStreamingSTT:
+    """
+    Gère la connexion streaming à AssemblyAI:
+      - start() => ouvre la connexion
+      - send_audio(chunk) => envoie l'audio
+      - callbacks on_partial / on_final
+    """
 
-class WhisperStreamingSTT:
-    def __init__(self, on_text, session_id):
-        self.on_text = on_text
-        self.session_id = session_id
-        self.audio_queue = queue.Queue()
+    def __init__(self, on_partial, on_final):
+        self.on_partial = on_partial
+        self.on_final = on_final
         self.stop_flag = False
+        self.transcriber = None
+        self._thread = None
 
-        # Accumule en RAM
-        self._buffer = bytearray()
-        self._lock = threading.Lock()
+        # Config AssemblyAI
+        aai.settings.api_key = os.getenv("ASSEMBLYAI_API_KEY")
+
+        self.transcriber = aai.RealtimeTranscriber(
+            # Choix du sample rate, ex 8000 => Twilio
+            sample_rate=8000,
+            encoding=aai.AudioEncoding.pcm_s16le,  # ou aai.AudioEncoding.pcm_mulaw si chunk_ulaw
+            # Callbacks
+            on_error=self._on_error,
+            on_close=self._on_close,
+            on_message=self._on_message,
+            end_utterance_silence_threshold=700,  # ms
+            word_boost=[],  # si besoin
+            # ...
+        )
 
     def start(self):
-        # Lance un thread pour périodiquement vider le buffer
-        self._thread = threading.Thread(target=self._run, daemon=True)
+        # On lance le transcriber dans un thread
+        def run_transcriber():
+            try:
+                self.transcriber.start()
+            except Exception as e:
+                logging.error(f"AssemblyAI transcriber error: {e}")
+
+        self._thread = threading.Thread(target=run_transcriber, daemon=True)
         self._thread.start()
 
     def stop(self):
         self.stop_flag = True
-        if self._thread.is_alive():
+        if self.transcriber:
+            self.transcriber.close()
+        if self._thread:
             self._thread.join()
 
-    def push_audio(self, chunk_pcm):
-        with self._lock:
-            self._buffer.extend(chunk_pcm)
-
-    def _run(self):
-        # On envoie un chunk toutes les 5s
-        CHUNK_INTERVAL = 5.0
-        last_time = time.time()
-
-        while not self.stop_flag:
-            time.sleep(0.1)
-            now = time.time()
-            if (now - last_time) >= CHUNK_INTERVAL:
-                # récup le buffer, le clear
-                with self._lock:
-                    data = bytes(self._buffer)
-                    self._buffer.clear()
-                if len(data) > 1024:
-                    # On fait la transcription
-                    text = self._transcribe_chunk(data)
-                    if text.strip():
-                        self.on_text(self.session_id, text)
-                last_time = now
-
-    def _transcribe_chunk(self, pcm_data: bytes) -> str:
+    def send_audio(self, pcm_data: bytes):
         """
-        Convertit un buffer PCM 16 bits en .wav, 
-        l'envoie à openai.Audio.transcriptions.create(model="whisper-1")
+        Envoie un chunk PCM16 (8kHz) à la transcriber
         """
-        try:
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-                tmp_name = tmp.name
-                # On va générer un WAV standard 16 bits / 16kHz
-                # pydub le fera. Sinon wave direct, but we must set params.
-                audio_seg = AudioSegment(
-                    data=pcm_data,
-                    sample_width=2,
-                    frame_rate=8000,  # Twilio 8k
-                    channels=1
-                )
-                # convert to 16k for better whisper accuracy
-                audio_seg_16k = audio_seg.set_frame_rate(16000)
-                audio_seg_16k.export(tmp_name, format="wav")
+        if not self.stop_flag and self.transcriber:
+            self.transcriber.send(pcm_data)
 
-            with open(tmp_name, "rb") as f:
-                resp = openai.Audio.transcribe(
-                    file=f,
-                    model="whisper-1",
-                    response_format="text",
-                    language="fr",  # ex: for French if you want
-                )
-            text = resp
-            return text
-        except Exception as e:
-            logging.error(f"STT chunk error: {e}")
-            return ""
-        finally:
-            if os.path.exists(tmp_name):
-                os.remove(tmp_name)
+    def _on_error(self, error_msg: str):
+        logging.error(f"[AssemblyAI] error: {error_msg}")
 
+    def _on_close(self):
+        logging.info("[AssemblyAI] streaming closed")
+
+    def _on_message(self, msg):
+        """
+        Reçoit un objet RealtimeTranscript,
+        contient is_final et text
+        """
+        if msg.message_type == aai.RealtimeMessageType.Transcript:
+            if msg.is_final:
+                # final
+                text = msg.text
+                if self.on_final:
+                    self.on_final(text)
+            else:
+                # partial
+                if self.on_partial:
+                    self.on_partial(msg.text)
