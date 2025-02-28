@@ -1,126 +1,122 @@
 # agent.py
 import uuid
-import threading
-import time
-import queue
 import logging
+import threading
 
-from stt import WhisperStreamingSTT
+from stt_assemblyai import AssemblyAIStreamingSTT
 from llm import gpt4_stream
 from tts import ElevenLabsStreamer
 
 class StreamingAgent:
-    """
-    Gère plusieurs sessions (plusieurs appels).
-    Sur Twilio inbound audio -> STT -> GPT -> TTS -> Twilio outbound
-    """
     def __init__(self):
-        self.sessions = {}  # session_id -> {...}
+        self.sessions = {}  # session_id -> dict
 
     def start_session(self, ws):
         session_id = str(uuid.uuid4())
+        logging.info(f"[Session {session_id}] start")
+
+        # On crée la structure
         sess = {
             "ws": ws,
-            "stop_flag": False,
             "speaking": False,
             "interrupt": False,
+            "conversation": [
+                {"role":"system","content":"You are a helpful FR assistant."},
+            ]
         }
-
-        # On crée un STT worker
-        stt = WhisperStreamingSTT(on_text=self.on_user_text, session_id=session_id)
-        sess["stt"] = stt
-
-        # On crée un TTS (ElevenLabs) streamer
+        # Crée un TTS
         tts = ElevenLabsStreamer(
             on_audio_chunk=lambda pcm: self.send_audio_chunk(session_id, pcm)
         )
         sess["tts"] = tts
 
-        # Historique conversation
-        sess["conversation"] = [
-            {"role":"system", "content": "You are a helpful assistant. (fr)"},
-        ]
+        # Crée un STT streaming AssemblyAI
+        # On fournit des callbacks partial/final.
+        stt = AssemblyAIStreamingSTT(
+            on_partial=lambda text: self.on_stt_partial(session_id, text),
+            on_final=lambda text: self.on_stt_final(session_id, text)
+        )
+        sess["stt"] = stt
 
-        # Lancement du thread STT
+        # Démarre la session stt
         stt.start()
 
         self.sessions[session_id] = sess
         return session_id
 
     def end_session(self, session_id):
-        sess = self.sessions.get(session_id)
+        sess = self.sessions.pop(session_id, None)
         if not sess:
             return
-        sess["stop_flag"] = True
+        # arrête stt
         sess["stt"].stop()
-        # on pourrait stopper TTS
-        del self.sessions[session_id]
 
     def on_user_audio_chunk(self, session_id, chunk_pcm):
         sess = self.sessions.get(session_id)
         if not sess:
             return
-
-        # Si IA parle => barge-in
+        # barge in
         if sess["speaking"]:
-            logging.info(f"[Session {session_id}] Barge-in triggered!")
             sess["interrupt"] = True
+            logging.info(f"[Session {session_id}] barge-in triggered.")
 
-        # On envoie ce chunk au STT
-        sess["stt"].push_audio(chunk_pcm)
+        # envoie le chunk au STT
+        stt = sess["stt"]
+        stt.send_audio(chunk_pcm)
 
-    def on_user_text(self, session_id, text):
+    def on_stt_partial(self, session_id, text):
         """
-        Callback STT: on a un nouveau bloc de transcription
-        => on appelle GPT-4 en streaming => TTS => renvoie Twilio
+        Callback quand AssemblyAI renvoie un partial transcript.
+        Optionnel : on peut l'ignorer ou l'afficher
+        """
+        logging.debug(f"[Session {session_id}] partial: {text}")
+
+    def on_stt_final(self, session_id, text):
+        """
+        Callback quand AssemblyAI renvoie un final transcript.
+        => On appelle GPT-4
         """
         sess = self.sessions.get(session_id)
-        if not sess or sess["stop_flag"]:
+        if not sess:
             return
 
-        # Ajoute au conversation history
-        conversation = sess["conversation"]
-        conversation.append({"role":"user","content":text})
+        if not text.strip():
+            return
+        # Ajoute un message "user"
+        sess["conversation"].append({"role":"user","content":text})
 
-        # Lance GPT-4 en streaming dans un thread
-        def do_gpt():
+        # Lance un thread GPT -> TTS
+        def run_gpt():
             sess["speaking"] = True
             sess["interrupt"] = False
-            partial_response = ""
-
-            for token in gpt4_stream(conversation):
+            partial_resp = ""
+            for token in gpt4_stream(sess["conversation"]):
                 if sess["interrupt"]:
-                    logging.info(f"[Session {session_id}] GPT stream interrupted.")
+                    logging.info(f"[Session {session_id}] GPT interrupted.")
                     break
-                partial_response += token
-                # On envoie token par token ou batch
-                sess["tts"].stream_text(token)  # envoi streaming TTS
-
+                partial_resp += token
+                # on envoie ce token au TTS
+                sess["tts"].stream_text(token)
             if not sess["interrupt"]:
-                # conversation "officielle"
-                conversation.append({"role":"assistant","content":partial_response})
-
+                # On finalize la réponse
+                sess["conversation"].append({"role":"assistant","content":partial_resp})
             sess["speaking"] = False
 
-        t = threading.Thread(target=do_gpt, daemon=True)
+        t = threading.Thread(target=run_gpt, daemon=True)
         t.start()
 
     def send_audio_chunk(self, session_id, pcm_data):
         """
-        Recoit un chunk PCM 16bits du TTS, 
-        Convertit en ulaw, envoie JSON media sur la WS Twilio
+        Reçoit un chunk PCM16 bits du TTS, convertit en ulaw,
+        l'envoie sur la websocket Twilio.
         """
-        import audioop
-        import base64
-        import json
-
+        import audioop, base64, json
         sess = self.sessions.get(session_id)
-        if not sess or sess["stop_flag"]:
+        if not sess:
             return
         if sess["interrupt"]:
-            # Barge-in => on n'envoie plus l'audio
+            # barge in => stop l'envoi
             return
-
         ws = sess["ws"]
         ulaw = audioop.lin2ulaw(pcm_data, 2)
         b64 = base64.b64encode(ulaw).decode("utf-8")
@@ -129,4 +125,3 @@ class StreamingAgent:
             "event":"media",
             "media":{"payload": b64}
         }))
-
