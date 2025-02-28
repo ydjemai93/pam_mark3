@@ -6,9 +6,9 @@ import threading
 
 class AssemblyAIStreamingSTT:
     """
-    Gère la connexion streaming à AssemblyAI:
-      - start() => ouvre la connexion
-      - send_audio(chunk) => envoie l'audio
+    Gère la connexion streaming à AssemblyAI :
+      - start() ouvre la connexion
+      - send_audio(chunk) envoie l'audio
       - Les callbacks on_partial(text) et on_final(text) gèrent la transcription.
     """
 
@@ -22,17 +22,16 @@ class AssemblyAIStreamingSTT:
         # Configure la clé API AssemblyAI
         aai.settings.api_key = os.getenv("ASSEMBLYAI_API_KEY")
 
-        # Créer la configuration du flux
+        # Créer la configuration du flux sans sample_rate
         config = aai.TranscriptionConfig(
-            sample_rate=8000,                     # 8000 Hz pour Twilio
-            encoding=aai.AudioEncoding.pcm_s16le, # PCM 16 bits little-endian
+            encoding=aai.AudioEncoding.pcm_s16le  # PCM 16 bits little-endian
             # Vous pouvez ajouter d'autres paramètres ici si nécessaire
         )
 
         # Instancier le transcriber avec la configuration
         self.transcriber = aai.RealtimeTranscriber(config=config)
 
-        # Assigner les callbacks après l'instanciation (selon la nouvelle API)
+        # Assigner les callbacks après l'instanciation (nouvelle API)
         self.transcriber.on_result = self._on_result
         self.transcriber.on_error = self._on_error
         self.transcriber.on_close = self._on_close
@@ -57,14 +56,14 @@ class AssemblyAIStreamingSTT:
             self._thread.join()
 
     def send_audio(self, pcm_data: bytes):
-        """Envoie un chunk PCM16 (8 kHz) à AssemblyAI."""
+        """Envoie un chunk PCM16 à AssemblyAI."""
         if not self.stop_flag and self.transcriber:
             self.transcriber.send(pcm_data)
 
     def _on_result(self, response):
         """
         Callback déclenché pour chaque résultat de transcription.
-        L'objet response possède des attributs tels que `message_type` et `transcript`.
+        L'objet response possède des attributs tels que message_type et transcript.
         """
         if response.message_type == aai.RealtimeMessageType.FINAL:
             text = response.transcript
