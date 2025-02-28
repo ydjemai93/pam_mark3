@@ -7,8 +7,8 @@ import threading
 class AssemblyAIStreamingSTT:
     """
     Gère la connexion streaming à AssemblyAI:
-      - start() ouvre la connexion
-      - send_audio(chunk) envoie l'audio
+      - start() ouvre la connexion,
+      - send_audio(chunk) envoie l'audio,
       - Les callbacks on_partial(text) et on_final(text) gèrent la transcription.
     """
 
@@ -22,17 +22,14 @@ class AssemblyAIStreamingSTT:
         # Configure la clé API AssemblyAI
         aai.settings.api_key = os.getenv("ASSEMBLYAI_API_KEY")
 
-        # Créer la configuration du flux sans sample_rate ni encoding
-        config = aai.TranscriptionConfig(
-            # Les paramètres par défaut conviennent généralement (PCM16, etc.)
-            # Vous pouvez ajouter d'autres options ici si besoin, par exemple:
-            # end_utterance_silence_threshold=700
+        # Instancier le RealtimeTranscriber en passant les paramètres directement
+        self.transcriber = aai.RealtimeTranscriber(
+            encoding=aai.AudioEncoding.pcm_s16le,  # PCM 16 bits little-endian (par défaut)
+            sample_rate=8000,                      # 8000 Hz pour l'audio inbound de Twilio
+            end_utterance_silence_threshold=700    # Fin d'utterance après 700 ms de silence
         )
 
-        # Instancier le transcriber avec la configuration
-        self.transcriber = aai.RealtimeTranscriber(config=config)
-
-        # Assigner les callbacks après l'instanciation (nouvelle API)
+        # Assigner les callbacks après instanciation
         self.transcriber.on_result = self._on_result
         self.transcriber.on_error = self._on_error
         self.transcriber.on_close = self._on_close
