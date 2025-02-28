@@ -6,9 +6,7 @@ simple_websocket==0.10.2
 openai==0.28.0
 requests==2.31.0
 
-# Pour conversion d'audio en G711 µ-law (audioop est natif, mais pydub/ffmpeg si besoin)
+assemblyai==0.10.3   # la lib Python AssemblyAI
+
 pydub==0.25.1
-
-# For concurrency, etc.
 gunicorn==21.2.0
-
