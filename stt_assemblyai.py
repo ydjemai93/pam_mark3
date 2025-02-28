@@ -6,8 +6,8 @@ import threading
 
 class AssemblyAIStreamingSTT:
     """
-    Gère la connexion streaming à AssemblyAI:
-      - start() ouvre la connexion,
+    Gère la connexion streaming à AssemblyAI :
+      - connect() ouvre la connexion,
       - send_audio(chunk) envoie l'audio,
       - Les callbacks on_partial(text) et on_final(text) gèrent la transcription.
     """
@@ -22,23 +22,23 @@ class AssemblyAIStreamingSTT:
         # Configure la clé API AssemblyAI
         aai.settings.api_key = os.getenv("ASSEMBLYAI_API_KEY")
 
-        # Instancier le RealtimeTranscriber en passant les paramètres requis
+        # Instancier le RealtimeTranscriber avec les paramètres requis.
+        # Remarquez que nous passons ici les callbacks obligatoires 'on_data' et 'on_error'
         self.transcriber = aai.RealtimeTranscriber(
             encoding=aai.AudioEncoding.pcm_s16le,   # PCM 16 bits little-endian
             sample_rate=8000,                       # 8000 Hz pour l'audio inbound de Twilio
             end_utterance_silence_threshold=700,    # fin d'utterance après 700 ms de silence
-            on_data=self._on_result,                # Callback pour les données (résultats)
+            on_data=self._on_result,                # Callback pour recevoir les résultats
             on_error=self._on_error                 # Callback pour les erreurs
         )
-
-        # Assigner le callback de fermeture si nécessaire
+        # Assigner le callback de fermeture
         self.transcriber.on_close = self._on_close
 
     def start(self):
-        """Lance le transcriber dans un thread dédié."""
+        """Ouvre la connexion streaming en appelant connect()."""
         def run_transcriber():
             try:
-                self.transcriber.start()
+                self.transcriber.connect()
             except Exception as e:
                 logging.error(f"AssemblyAI transcriber error: {e}")
 
@@ -54,9 +54,9 @@ class AssemblyAIStreamingSTT:
             self._thread.join()
 
     def send_audio(self, pcm_data: bytes):
-        """Envoie un chunk PCM16 (8 kHz) à AssemblyAI."""
+        """Envoie un chunk PCM16 (8 kHz) à AssemblyAI via send_data()."""
         if not self.stop_flag and self.transcriber:
-            self.transcriber.send(pcm_data)
+            self.transcriber.send_data(pcm_data)
 
     def _on_result(self, response):
         """
